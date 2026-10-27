@@ -1,0 +1,30 @@
+# ---- 构建产物 ----
+code/firmware/build/
+build/diag/
+
+# ---- 编译中间文件 ----
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+*.axf
+*.lst
+
+# ---- 第三方/工具缓存 ----
+.codebuddy/
+
+# ---- 二进制硬件归档（保留源文件 sch/pcb/pdf/txt） ----
+hardware/*.zip
+hardware/*.dwg
+
+# ---- 编辑器/系统 ----
+.DS_Store
+Thumbs.db
+*~
+# Altium/Office 临时锁文件（~$ 开头，可能被占用无法删除，切勿入库）
+~$*
+
+# ---- 日志 ----
+*.log
+compile.log

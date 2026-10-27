@@ -1,0 +1,7 @@
+r
+h
+loadbin D:\zhutao\SMU\code\firmware\build\smu.bin, 0x08000000
+verifybin D:\zhutao\SMU\code\firmware\build\smu.bin, 0x08000000
+r
+go
+exit
