@@ -2,7 +2,8 @@
  * @file   smu_mode.c
  * @brief  模式状态机 + 安全切换时序（PRD §4.1 FR-MODE-6 / §7 SR-4）
  * @note   时序（硬件真值表推导）：
- *         离开输出：VOUT_EN=0 → 20ms → I_V_TEST_EN=1 → I_TEST_EN(按模式)
+ *         离开输出：HIZ 时 VOUT_EN=1+duty=0(低边管接地,0V,避免浮空漏电 ~0.56V)；
+ *                   VM/IM 时 VOUT_EN=0(真高阻,不短接被测件)
  *         进入输出：I_V_TEST_EN=0 → 20ms → VOUT_EN=1（占空比由控制环软启动）
  */
 #include "smu_mode.h"
@@ -87,6 +88,13 @@ void SMU_ModeTick(void)
                 s_seq.step = SEQ_S3;
                 s_seq.timer_ms = 0;
             } else {
+                if (s_seq.target == SMU_MODE_HIZ) {
+                    hw_write(1, 0, 0);          /* 输出关断=低边管接地(0V)，非悬空漏电 */
+                } else {
+                    uint8_t itest  = (s_seq.target == SMU_MODE_IM) ? 1U : 0U;
+                    uint8_t ivtest = (s_seq.target == SMU_MODE_VM || s_seq.target == SMU_MODE_IM) ? 1U : 0U;
+                    hw_write(0, itest, ivtest); /* VM/IM 真高阻，不接地以免短接被测件 */
+                }
                 g_smu.mode = s_seq.target;      /* HIZ/VM/IM 完成 */
                 g_smu.outp = 0;
                 g_smu.stat &= (uint16_t)~SMU_ST_OUT_ACTIVE;

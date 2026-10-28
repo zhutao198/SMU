@@ -17,16 +17,51 @@ extern TIM_HandleTypeDef htim2;
 static float s_duty;
 static float s_integ;
 static uint32_t s_softstart_ms;
+/* 一阶 Σ-Δ 抖动累加器（Q16）：把分数占空比分摊到相邻计数码之间，
+ * 等效提升 PWM 分辨率，消除 1~4V 区间因 1 码≈162mV 台阶造成的极限环抖动。
+ * 控制环 250Hz 切换 CCR，输出 LC 与 ADS1115 8 点均值把抖动平均成稳定小纹波。 */
+static uint32_t s_dither_acc;
+static uint32_t s_arr;   /* 当前 TIM2 自动重装载(决定 f_sw)，供自适应频率使用 */
+
+/* 自适应开关频率：低电压时降低 f_sw 以延长导通时间(改善 1~2V 调节并提升分辨率)，
+ * 高电压/大电流时维持高 f_sw 以免 10µH/1.5A 电感纹波饱和。
+ * 占空比以分数表示，改 f_sw(=改 ARR) 后平均占空比不变 → 输出电压不跳变，仅纹波/分辨率变。
+ *   on-time = (vout/VBUS)*(1/f)，要求 >= ~250ns(可靠调节下限)
+ *   ΔI      = vout*(1-vout/VBUS)/(L*f)，峰值 = iout+ΔI/2 须 < 饱和限值 */
+static uint32_t smu_ctrl_pick_arr(float vout, float iout)
+{
+    if (vout < 0.0f) vout = 0.0f;
+    if (iout < 0.0f) iout = 0.0f;
+    float f_ontime = (vout / SMU_VBUS) / 250e-9f;
+    float L = 10e-6f;
+    float isat = 1.30f;                       /* 10µH/1.5A 电感，留裕量 */
+    float denom = L * (isat - iout) * 2.0f;
+    float f_ripple = 1e9f;
+    if (denom > 1e-9f)
+        f_ripple = vout * (1.0f - vout / SMU_VBUS) / denom;
+    float f = f_ontime;
+    if (f_ripple > f) f = f_ripple;           /* 纹波更严格时取更高频率 */
+    f = ((uint32_t)(f / 50e3f + 0.5f)) * 50e3f; /* 量化到 50kHz 档，减少抖动 */
+    if (f < 100e3f) f = 100e3f;
+    if (f > 400e3f) f = 400e3f;
+    return (uint32_t)(SMU_TIM_CLK / f) - 1U;
+}
 
 void SMU_CtrlInit(void)
 {
     s_duty = 0.0f;
     s_integ = 0.0f;
     s_softstart_ms = 0;
+    s_dither_acc = 0U;
     g_smu.duty = 0.0f;
     g_smu.integ = 0.0f;
     SMU_CtrlSetDuty(0.0f);
     HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+    s_arr = __HAL_TIM_GET_AUTORELOAD(&htim2);
+    /* 关断态(上电/outp off)保持低边管导通：EN=1 + duty=0 → 输出被钳在 0V。
+     * 否则 EN=0 使两管都关，J4 浮空被功率级漏电流(LM5106 自举残压使高边微导通
+     * 或 35V 经关断管漏电)抬到 ~0.56V。VM/IM 测量模式由 smu_mode 单独置 EN=0 真高阻。 */
+    HAL_GPIO_WritePin(SMU_EN_PORT, SMU_EN_PIN, GPIO_PIN_SET);
 }
 
 void SMU_CtrlSetDuty(float d)
@@ -36,9 +71,16 @@ void SMU_CtrlSetDuty(float d)
     s_duty = d;
     g_smu.duty = d;
     uint32_t arr = __HAL_TIM_GET_AUTORELOAD(&htim2);
-    uint32_t ccr = (uint32_t)(d * (float)(arr + 1U));
-    if (ccr > arr) ccr = arr;
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, ccr);
+    float fcounts = d * (float)(arr + 1U);          /* 期望计数（可含小数） */
+    uint32_t base = (uint32_t)fcounts;              /* 向下取整 */
+    uint32_t frac = (uint32_t)((fcounts - (float)base) * 65536.0f);
+    s_dither_acc += frac;
+    if (s_dither_acc >= 65536U) {                   /* 本周期多用 1 个计数 */
+        s_dither_acc -= 65536U;
+        base += 1U;
+    }
+    if (base > arr) base = arr;                     /* 近满占空比时夹紧 */
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, base);
 }
 
 float SMU_CtrlGetDuty(void) { return s_duty; }
@@ -53,6 +95,8 @@ void SMU_CtrlDbgInfo(char *buf, uint32_t len)
     p = smu_cat_uint(p, (unsigned long)ccr);
     p = smu_cat(p, ",arr=");
     p = smu_cat_uint(p, (unsigned long)arr);
+    p = smu_cat(p, ",f=");
+    p = smu_cat_uint(p, (unsigned long)(SMU_TIM_CLK / (arr + 1U)));
     p = smu_cat(p, ",en=");
     p = smu_cat_uint(p, (unsigned long)(HAL_GPIO_ReadPin(SMU_EN_PORT, SMU_EN_PIN) == GPIO_PIN_SET));
     p = smu_cat(p, ",itest=");
@@ -81,6 +125,19 @@ void SMU_CtrlTick(void)
         s_softstart_ms = 0;
         s_integ = 0.0f;
         return;
+    }
+
+    /* 自适应开关频率：依 vout/iout 调整 TIM2 ARR。
+     * 占空比以分数表示，改 ARR 后平均占空比不变 → 输出电压不跳变。
+     * 电压取 max(vset,vmeas)：重负载开机瞬间 vmeas 未起来也能维持高 f_sw，
+     * 避免低频下电感纹波饱和；稳态调节时仍按实际电压降频以改善 1~2V。 */
+    float v = (g_smu.vset > g_smu.vmeas) ? g_smu.vset : g_smu.vmeas;
+    uint32_t new_arr = smu_ctrl_pick_arr(v, g_smu.imeas);
+    if (new_arr != s_arr) {
+        __HAL_TIM_SET_AUTORELOAD(&htim2, new_arr);
+        s_arr = new_arr;
+        s_dither_acc = 0U;                 /* 重新对齐抖动累加器 */
+        SMU_CtrlSetDuty(s_duty);           /* 用新 ARR 立即重算 CCR2，避免瞬时越界 */
     }
 
     /* 软启动斜坡（PRD FR-OUT-5） */

@@ -107,6 +107,7 @@ extern IWDG_HandleTypeDef hiwdg;      /* IWDG     : 100ms 看门狗        */
 #define SMU_SEQ_TICK_MS         10U      /* 模式切换序列节拍         */
 #define SMU_SEQ_SETTLE_MS       20U      /* 输出/测量切换稳定时间    */
 #define SMU_CTRL_HZ             250U     /* 控制环频率               */
+#define SMU_TIM_CLK             84000000UL /* TIM2 时钟(APB1=42MHz×2=84MHz) */
 /* ---- PI 控制参数（M2 整定，250Hz 控制环）----
  * CV：前馈(vset/35≈0.143@5V) + PI 修正。
  *      KP=0.002（1V 误差→0.2% duty），KI=0.0002/tick，**积分限幅 ±0.05**
