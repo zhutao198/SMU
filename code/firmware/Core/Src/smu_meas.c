@@ -1,8 +1,9 @@
 /**
  * @file   smu_meas.c
  * @brief  ADS1115 驱动 + 工程量换算 + 数字滤波（PRD §4.3）
- * @note   采样策略：控制环 250Hz，轮转 2 个差分通道 → 电压/电流各 125Hz（PR-8）。
- *         转换完成用固定延时 2ms 判断（单次模式 860SPS 转换仅 1.2ms）。
+ * @note   采样策略：控制环 ~250Hz。输出激活时：CC 电流优先（每 tick 电流、每 4 tick 电压）；
+ *         CV/VM/IM 电压优先（每 tick 电压、每 4 tick 电流，仅显示/OCP）。空闲态交替。
+ *         目的：消除 CV 下电压 8ms 轮转停滞 + 8 点平均≈56ms 群延迟 → 抑制反馈极限环。
  *         **只有 ctrl 任务访问 ADS1115**；cmd 任务只读 g_smu.adc[] 缓存。
  */
 #include "smu_meas.h"
@@ -103,33 +104,41 @@ int ADS1115_ConvertOnce(uint8_t ch, int16_t *out)
 
     for (int retry = 0; retry < 3; retry++) {
         if (i2c_write_raw(ADS1115_REG_CONFIG, cfgw) != 0) {
-            vTaskDelay(pdMS_TO_TICKS(2));
+            vTaskDelay(pdMS_TO_TICKS(1));
             continue;
         }
         /* 读回 config 记录（诊断用），并确认 MUX/PGA 已切换 */
         if (i2c_read_raw(ADS1115_REG_CONFIG, &cfg) == 0) {
             s_cfg_last = cfg;
             if ((cfg & ADS_CFG_KEYBITS) != (cfgw & ADS_CFG_KEYBITS)) {
-                vTaskDelay(pdMS_TO_TICKS(2));
+                vTaskDelay(pdMS_TO_TICKS(1));
                 continue;
             }
         }
 
-        /* 等转换完成：单次模式 860SPS 仅需 1.2ms，等 2ms 足够。
-         * 再多读一次 conv 丢弃，保证取到的是**本次**转换的结果
-         * （器件若推迟接受 config，第一次读到的仍是上一次的旧值）。 */
-        vTaskDelay(pdMS_TO_TICKS(2));
-        if (i2c_read_raw(ADS1115_REG_CONV, &dummy) != 0) {
-            vTaskDelay(pdMS_TO_TICKS(2));
+        /* 紧轮询 OS 位等转换完成（单次 860SPS≈1.2ms），替代原固定 vTaskDelay(2ms)
+         * 空等——把单通道转换从 ~5ms 降到 ~1.5ms，环路恢复 250Hz、反馈延迟<5ms，
+         * 提升相位裕度、消除 CV 极限环。OS=1 表示本次转换已完成，读 CONV 即本次结果
+         * （无需再丢弃第一次读数）。 */
+        uint8_t done = 0;
+        for (int t = 0; t < 6; t++) {
+            uint16_t c;
+            if (i2c_read_raw(ADS1115_REG_CONFIG, &c) == 0 && (c & 0x8000U)) {
+                done = 1;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        if (!done) {
+            vTaskDelay(pdMS_TO_TICKS(1));
             continue;
         }
-        vTaskDelay(pdMS_TO_TICKS(1));
         if (i2c_read_raw(ADS1115_REG_CONV, &dummy) == 0) {
             *out = (int16_t)dummy;
             i2c_unlock();
             return 0;
         }
-        vTaskDelay(pdMS_TO_TICKS(2));
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
     i2c_unlock();
     return -1;
@@ -159,8 +168,9 @@ float SMU_MeasAvgCode(uint8_t ch)
 
 /* ---------------- 滤波 ---------------- */
 static int16_t s_fbuf[SMU_ADC_CH_NUM][SMU_MEAS_FILTER_LEN];
-static uint8_t s_fidx;
+static uint8_t s_fidx[SMU_ADC_CH_NUM];
 static uint8_t s_ch;
+static uint8_t s_cc_div;    /* CC 模式下电压采样节拍（每 4 tick 采 1 次电压） */
 
 void SMU_MeasInit(void)
 {
@@ -168,8 +178,9 @@ void SMU_MeasInit(void)
         s_i2c_mux = xSemaphoreCreateMutex();
     }
     memset(s_fbuf, 0, sizeof(s_fbuf));
-    s_fidx = 0;
+    memset(s_fidx, 0, sizeof(s_fidx));
     s_ch = 0;
+    s_cc_div = 0;
     g_smu.adc[0] = 0;
     g_smu.adc[1] = 0;
 }
@@ -177,8 +188,21 @@ void SMU_MeasInit(void)
 void SMU_MeasTick(void)
 {
     int16_t code = 0;
-    uint8_t ch = s_ch;
-    s_ch = (uint8_t)((s_ch + 1U) % SMU_ADC_CH_NUM);
+    uint8_t ch;
+    /* 输出激活时按模式优先级采样，缩短反馈延迟、抑制极限环：
+     * - CC：电流优先（每 tick 电流，每 4 tick 电压仅显示/OVP），电流滤波延迟~32ms。
+     * - CV/VM/IM：电压优先（每 tick 电压，每 4 tick 电流仅显示/OCP），消除 8ms 轮转停滞。 */
+    if (g_smu.stat & SMU_ST_OUT_ACTIVE) {
+        s_cc_div = (uint8_t)((s_cc_div + 1U) % 4U);
+        if (g_smu.mode == SMU_MODE_CC) {
+            ch = (s_cc_div == 0U) ? SMU_CH_VOLT : SMU_CH_CURR;
+        } else {
+            ch = (s_cc_div == 0U) ? SMU_CH_CURR : SMU_CH_VOLT;
+        }
+    } else {
+        ch = s_ch;
+        s_ch = (uint8_t)((s_ch + 1U) % SMU_ADC_CH_NUM);
+    }
 
     if (ADS1115_ConvertOnce(ch, &code) != 0) {
         g_smu.stat &= (uint16_t)~SMU_ST_ADC_OK;
@@ -188,8 +212,8 @@ void SMU_MeasTick(void)
     g_smu.stat |= SMU_ST_ADC_OK;
     if (g_smu.err == SMU_ERR_ADC) g_smu.err = SMU_ERR_NONE;
 
-    s_fbuf[ch][s_fidx] = code;
-    if (ch == SMU_CH_CURR) s_fidx = (uint8_t)((s_fidx + 1U) % SMU_MEAS_FILTER_LEN);
+    s_fbuf[ch][s_fidx[ch]] = code;
+    s_fidx[ch] = (uint8_t)((s_fidx[ch] + 1U) % SMU_MEAS_FILTER_LEN);
     g_smu.adc[ch] = code;
 
     /* 换算成工程量（标定系数 y = k*x + b，FR-MEAS-6） */

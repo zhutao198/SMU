@@ -107,6 +107,7 @@ void SMU_ModeTick(void)
             g_smu.mode = s_seq.target;
             g_smu.outp = (s_seq.target == SMU_MODE_CV || s_seq.target == SMU_MODE_CC) ? 1U : 0U;
             g_smu.stat |= SMU_ST_OUT_ACTIVE;
+            SMU_CtrlReset();                     /* 清积分/抖动/软启动，避免旧状态带入新工作点 */
             s_seq.active = 0;
         }
         break;

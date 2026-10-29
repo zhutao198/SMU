@@ -17,6 +17,8 @@ void SMU_CtrlSetDuty(float d);    /* 0..1 */
 float SMU_CtrlGetDuty(void);
 /* 立即安全关断（保护/急停路径直接调用，不走状态机） */
 void SMU_CtrlShutdown(void);
+/* 复位控制状态（模式提交/切换时调用，清积分/抖动/软启动） */
+void SMU_CtrlReset(void);
 /* 硬件状态回显（诊断用）：写入 buf，格式 "ccr2=..,arr=..,en=..,itest=..,ivtest=.." */
 void SMU_CtrlDbgInfo(char *buf, uint32_t len);
 

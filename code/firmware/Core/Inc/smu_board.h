@@ -76,17 +76,23 @@ extern IWDG_HandleTypeDef hiwdg;      /* IWDG     : 100ms 看门狗        */
 #define SMU_ADC_CH_NUM          2U
 
 /* ==================== 量程与换算系数（PRD §5 / §7） ======================= */
-#define SMU_V_MAX               30.0f    /* 电压设定上限 V          */
+#define SMU_V_MAX               15.0f    /* 电压设定上限 V（母线16V→实际≤~15V） */
 #define SMU_I_MAX_MA            30.0f    /* 电流设定上限 mA         */
-#define SMU_V_PROT_MIN          5.0f     /* 过压保护下限 V          */
-#define SMU_V_PROT_DEF          30.0f    /* 过压保护默认 V          */
+#define SMU_V_PROT_MIN          1.0f     /* 过压保护下限 V          */
+#define SMU_V_PROT_DEF          13.0f    /* 过压保护默认 V（量程0-12V）*/
 #define SMU_I_PROT_MIN          1.0f     /* 过流保护下限 mA         */
 #define SMU_I_PROT_DEF          30.0f    /* 过流保护默认 mA         */
 #define SMU_VDIV_RATIO          9.66f    /* R137 86.6k / R157 10k   */
-#define SMU_INA_GAIN            50.4f    /* INA129: 1 + 49.4k/R50(1k) */
+#define SMU_INA_GAIN            30.0f    /* 本板用 INA128（非 INA129），标称 G=1+50k/RG；RG=1k→G=51。
+                                        * 但实测有效 G×RSENSE≈17（INA128 引脚(OUT-REF)=0.299V@17.58mA 反推），
+                                        * 故固件用 30 配合 RSENSE=0.570 使乘积=17.1。G_fw=30 亦与稳定性历史(G_hw≈30)吻合 */
 #define SMU_VREF_NOM            1.65f    /* U18-B 缓冲分压          */
-#define SMU_RSENSE              1.0f     /* R133 采样电阻 1Ω        */
-#define SMU_VBUS                35.0f    /* 升压母线 V              */
+#define SMU_RSENSE              0.570f   /* 注意：R133 实为 1Ω！0.570 是在"INA 共模失效"故障态下的等效拟合值。
+                                        * 根因：电流采样 INA(U19 INA129/INA101A) 输入共模≈0.89V，低于 (V-)+2V=1.77V
+                                        * （-VS=-0.23V），输入级超线性范围→有效 G×RSENSE≈17 且非线性。
+                                        * 硬件修复（抬共模或换低边电流检测放大器）后，须改回 RSENSE=1.0、INA_GAIN=50.4 重新标定 */
+#define SMU_VBUS                16.06f   /* 升压母线 V（实测 16.06V）*/
+#define SMU_DI_RIPPLE_MAX       0.55f    /* 电感纹波电流上限 A p-p：与 L=300µH + 10kHz 量化配合，使 f_sw 落到 ~20kHz 档，\n                                        * 1 码步长≤~4mV < CV 死区 5mV，杜绝抖动被反馈环放大成方波极限环 */
 #define SMU_ADC_FS              2.048f   /* ADS1115 PGA ±2.048V（单侧满量程） */
 /* LSB = FSR/32768 = 62.5µV（2026-10-27 实测反推：val=-22786 ↔ U18-A=0.218V）
  * 注：曾误记为 125µV（那是 2×FSR/32768），导致 V 读数虚高约 2 倍 */
@@ -112,15 +118,18 @@ extern IWDG_HandleTypeDef hiwdg;      /* IWDG     : 100ms 看门狗        */
  * CV：前馈(vset/35≈0.143@5V) + PI 修正。
  *      KP=0.002（1V 误差→0.2% duty），KI=0.0002/tick，**积分限幅 ±0.05**
  *      （必须远小于前馈量，否则外部电压倒灌时积分会把 duty 压到 0 无法起输）
- * CC：比例 + 积分 + 死区。KP=0.004/mA，KI=0.002/tick，积分限幅 ±0.05，死区 0.05mA */
+ * CC：纯 PI（无前馈，占空比主要由积分建立）。积分限幅必须是全占空比区间
+ *      (0..DUTY_MAX)，否则大负载到不了设定电流；KP/KI 取保守值防低阻负载震荡；
+ *      死区 0.1mA 防极限环。电流反馈延迟已靠 CC 模式电流优先采样压到 ~32ms。 */
 #define SMU_CTRL_KP_CV          0.002f
-#define SMU_CTRL_KI_CV          0.0002f
+#define SMU_CTRL_KI_CV          0.0006f   /* 原 0.0002：软启动 anti-windup 后残余微调更快；5ms 延迟下穿越~0.4Hz 仍极稳 */
 #define SMU_CTRL_INT_MAX_CV     0.05f
-#define SMU_CTRL_KP_CC          0.004f
-#define SMU_CTRL_KI_CC          0.002f
-#define SMU_CTRL_INT_MAX_CC     0.05f
-#define SMU_CTRL_DEAD_MA        0.05f
-#define SMU_MEAS_FILTER_LEN     8U       /* 滑动平均窗口             */
+#define SMU_CTRL_KP_CC          0.001f   /* 减半：INA_GAIN 25 使环路增益较原 50.4 翻倍，PI 同步减半以恢复稳定 */
+#define SMU_CTRL_KI_CC          0.00025f
+#define SMU_CTRL_INT_MAX_CC     0.95f
+#define SMU_CTRL_DEAD_MA        0.10f
+#define SMU_CTRL_DEAD_V         0.005f   /* CV 电压死区(V)：误差在此内冻结积分、前馈仍维持输出，掐断 CV 极限环；静态误差≈此量级 */
+#define SMU_MEAS_FILTER_LEN     2U       /* 滑动平均窗口：原 8 点≈56ms 群延迟致 CV 极限环，改 2 点降延迟（滞后<~3ms） */
 #define SMU_SOFTSTART_MS        300U     /* 0→设定值 软启动时间      */
 #define SMU_IWDG_TIMEOUT_MS     100U     /* 看门狗超时               */
 

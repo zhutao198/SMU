@@ -27,6 +27,7 @@ typedef enum {
 #define SMU_ST_PROT         0x0002U   /* bit1 保护锁存            */
 #define SMU_ST_ADC_OK       0x0004U   /* bit2 ADS1115 在线        */
 #define SMU_ST_OUT_ACTIVE   0x0008U   /* bit3 输出已建立          */
+#define SMU_ST_PROT_ARMED   0x0010U   /* bit4 保护已武装（软启动完成后才允许 OVP/OCP 锁存）*/
 
 /* ==================== 错误码（PRD §6.2 / Web errText） =================== */
 #define SMU_ERR_NONE        0
