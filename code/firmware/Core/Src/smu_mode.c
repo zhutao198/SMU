@@ -47,7 +47,10 @@ void SMU_ModeInit(void)
     g_smu.vset  = 0.0f;
     g_smu.iset  = 0.0f;
     SMU_CtrlSetDuty(0.0f);
-    hw_write(0, 0, 0);              /* 上电安全态：EN=0, I_TEST=0, I_V_TEST=0 → HIZ（SR-1） */
+    /* 上电安全态：HIZ 但 EN=1 + duty=0 → 低边管接地把输出钳在 0V，
+     * 避免 EN=0 浮空被功率级漏电抬到 ~0.56V（与状态机切到的 HIZ 行为一致，
+     * 见文件头时序说明：HIZ 时 VOUT_EN=1+duty=0 避免浮空漏电）。 */
+    hw_write(1, 0, 0);
 }
 
 int SMU_ModeBusy(void) { return s_seq.active; }

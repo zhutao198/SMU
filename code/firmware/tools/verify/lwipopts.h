@@ -53,7 +53,7 @@
 #define LWIP_TCPIP_TIMEOUT              1
 /* 注意：以下宏名必须与 LwIP opt.h 一致（曾因写成 LWIP_TCPIP_TASK_STACKSIZE
    导致 tcpip 线程栈大小为 0，pvPortMalloc(0) 失败进 malloc hook） */
-#define TCPIP_THREAD_STACKSIZE          1024
+#define TCPIP_THREAD_STACKSIZE          2048
 #define TCPIP_THREAD_PRIO               3
 #define TCPIP_MBOX_SIZE                 8
 #define DEFAULT_ACCEPTMBOX_SIZE         4
@@ -68,7 +68,10 @@
 
 #define CHECKSUM_BY_HARDWARE            1
 #define LWIP_CHECKSUM_CTRL_PER_NETIF    1
-#define ETH_PAD_SIZE                    2
+#define ETH_PAD_SIZE                    0   /* 关键修复：原=2 但收包 pbuf 未预留填充，
+                                                导致 ethernet_input 入口 pbuf_header(-2) 失败、
+                                                所有 RX 包（含 ARP）被静默丢弃、板子从不回包。
+                                                设为 0 后 RX/TX 以太网头都在偏移 0，收发一致。 */
 
 #define MEMP_NUM_SYS_CALLBACKS          1
 

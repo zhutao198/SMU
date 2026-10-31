@@ -78,6 +78,12 @@ static void send_json(struct netconn *conn)
     p = smu_cat_fixed(p, g_smu.vprot, 1);
     p = smu_cat(p, ",\"iprot\":");
     p = smu_cat_fixed(p, g_smu.iprot, 1);
+    /* 暴露真实量程（smu_board.h 的 SMU_V_MAX / SMU_I_MAX_MA），前端滑块据此设上限，
+     * 避免前端写死 30V 而固件已限制为 15V（母线16V→≤~15V）时滑块与固件不一致。 */
+    p = smu_cat(p, ",\"vmax\":");
+    p = smu_cat_fixed(p, SMU_V_MAX, 1);
+    p = smu_cat(p, ",\"imax\":");
+    p = smu_cat_fixed(p, SMU_I_MAX_MA, 1);
     p = smu_cat(p, ",\"outp\":");
     p = smu_cat_uint(p, (unsigned long)g_smu.outp);
     p = smu_cat(p, ",\"stat\":");
@@ -133,8 +139,13 @@ static void handle_set(struct netconn *conn, const char *qs)
 {
     char v[32], resp[64], last[64] = "OK";
     int rc = 0, any = 0;
+    /* 注意：前端网页用 vset/iset 作为电压/电流的设置键（见 smu_webpage.h 中
+     * bindPair('vSet','vSlide','vset',...)），而早期后端只认 volt/curr，导致
+     * 网页设电压/电流时参数被忽略、走到 any=0 返回 -100("设置失败-100")。
+     * 这里两种键名都接受，避免前后端键名不一致。 */
     struct { const char *key; const char *cmd; } map[] = {
-        { "mode",  "MODE"  }, { "volt", "VOLT" }, { "curr", "CURR" },
+        { "mode",  "MODE"  }, { "volt", "VOLT" }, { "vset", "VOLT" },
+        { "curr", "CURR" }, { "iset", "CURR" },
         { "vprot", "VOLT:PROT" }, { "iprot", "CURR:PROT" },
     };
     for (unsigned i = 0; i < sizeof(map)/sizeof(map[0]); i++) {

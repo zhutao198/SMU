@@ -87,7 +87,7 @@ footer b{color:var(--tx);font-weight:500}
 <header>
   <div class="brand">
     <h1>SMU 源表控制台</h1>
-    <p>Source-Measure Unit · 0~30V / 0~30mA · CV / CC / VM / IM</p>
+    <p id="subTitle">Source-Measure Unit · 0~15V / 0~30mA · CV / CC / VM / IM</p>
   </div>
   <div class="hbadges">
     <span class="badge" id="connBadge"><span class="dot" id="connDot"></span><b id="connTxt">连接中…</b></span>
@@ -141,9 +141,9 @@ footer b{color:var(--tx);font-weight:500}
       <h2>输出设定</h2>
       <div class="row">
         <label>电压设定</label>
-        <input type="number" id="vSet" min="0" max="30" step="0.001" value="0">
+        <input type="number" id="vSet" min="0" max="15" step="0.001" value="0">
         <span class="u">V</span>
-        <input type="range" id="vSlide" min="0" max="30" step="0.01" value="0">
+        <input type="range" id="vSlide" min="0" max="15" step="0.01" value="0">
       </div>
       <div class="row">
         <label>电流设定</label>
@@ -175,6 +175,37 @@ footer b{color:var(--tx);font-weight:500}
         <button class="btn warn" id="clsBtn">*CLS 清警</button>
       </div>
     </div>
+
+    <div class="card">
+      <h2>校准 CAL <span class="sub">先零点后增益，结束点保存</span></h2>
+      <p style="font-size:11.5px;color:var(--mu);margin-bottom:9px">
+        零点：输出端短接/空载时采集；增益：接入已知参考电压或电流，填入<b>实测值</b>后点“应用”。完成后务必点“保存”。
+      </p>
+      <div class="row">
+        <label>电压零点</label>
+        <button class="btn" id="calVz">采集零点</button>
+      </div>
+      <div class="row">
+        <label>电压增益</label>
+        <input type="number" id="calVg" min="0" step="0.01" value="0">
+        <span class="u">V</span>
+        <button class="btn" id="calVgBtn">应用</button>
+      </div>
+      <div class="row">
+        <label>电流零点</label>
+        <button class="btn" id="calIz">采集零点</button>
+      </div>
+      <div class="row">
+        <label>电流增益</label>
+        <input type="number" id="calIg" min="0" step="0.01" value="0">
+        <span class="u">mA</span>
+        <button class="btn" id="calIgBtn">应用</button>
+      </div>
+      <div class="btnrow">
+        <button class="btn" id="calSave">CAL:SAVE 保存</button>
+        <button class="btn warn" id="calDef">CAL:DEF 默认</button>
+      </div>
+    </div>
   </section>
 </main>
 
@@ -198,17 +229,18 @@ footer b{color:var(--tx);font-weight:500}
  * - 后端不可达时自动进入"演示模式"（本地仿真），并周期性重连
  * ================================================================ */
 var POLL_MS = 300, RETRY_EVERY = 8;          // 演示模式下每 8 拍尝试重连真实后端
+var failStreak = 0, OFFLINE_STREAK = 6;        // 连续失败达阈值才判离线(容忍 CAL:SAVE 擦 Flash 的 ~1s 卡顿)
 var N_PTS = 60;                              // 曲线缓冲点数（≈18s @300ms）
 
 var S = {                                    // 页面状态
   online:null, demo:true, tick:0,
   mode:'HIZ', vset:0, iset:0, vmeas:0, imeas:0, vprot:30, iprot:30,
-  outp:0, stat:0, err:0, j18:0, fw:'--', ip:'--', mac:'--',
+  outp:0, stat:0, err:0, j18:0, fw:'--', ip:'--', mac:'--', vmax:15, imax:30,
   vBuf:new Array(N_PTS).fill(null), iBuf:new Array(N_PTS).fill(null)
 };
 var HINT = {
   CV:'恒压输出：调节占空比使端子电压稳定在设定值（限流见保护阈值）',
-  CC:'恒流输出：调节占空比使回路电流稳定在设定值（限压 30V）',
+  CC:'恒流输出：调节占空比使回路电流稳定在设定值（限压由保护阈值决定）',
   VM:'电压测量：输出已断开，高阻测量外部 DUT 端压',
   IM:'电流测量：输出已断开，测量外部灌入电流（经内部 Q5 接地）',
   HIZ:'高阻态：输出端子与内部功率级断开'
@@ -216,6 +248,8 @@ var HINT = {
 var $ = function(id){ return document.getElementById(id); };
 var clamp = function(v,a,b){ v=parseFloat(v); return isNaN(v)?a:Math.min(b,Math.max(a,v)); };
 var fmt = function(v,d){ return (v==null||isNaN(v))?'--.--':v.toFixed(d); };
+/* 设置键 → 对应量程字段（电压类用 vmax，电流类用 imax），让 clamp 跟随固件真实上限 */
+var RANGE_MAX = { vset:'vmax', vprot:'vmax', iset:'imax', iprot:'imax' };
 
 /* ---------------- toast ---------------- */
 var toastT=null;
@@ -298,22 +332,26 @@ function poll(){
     .then(function(r){ if(!r.ok) throw 0; return r.json(); })
     .then(function(d){
       if(!d||typeof d.mode!=='string') throw 0;
+      failStreak = 0;
       setConn(true); applyData(d);
     })
     .catch(function(){
-      setConn(false);
-      if(S.tick%RETRY_EVERY===0) return;      // 演示模式下周期性重连
-      simStep();
+      failStreak++;
+      if(failStreak >= OFFLINE_STREAK){       // 仅连续失败超阈值才切演示模式
+        setConn(false);
+        if(S.tick%RETRY_EVERY!==0) simStep(); // 演示态动画(每 8 拍跳过以"重连")
+      }
+      // 阈值内视为瞬时断连(如 CAL:SAVE 擦 Flash 卡顿~1s)，保持在线显示、不弹提示
     });
-  if(!S.online && S.tick%RETRY_EVERY!==0) simStep();
 }
 function applyData(d){
   S.mode=d.mode; S.vset=+d.vset||0; S.iset=+d.iset||0;
   S.vmeas=+d.vmeas||0; S.imeas=+d.imeas||0;
   S.vprot=+d.vprot||30; S.iprot=+d.iprot||30;
+  S.vmax=+d.vmax||15; S.imax=+d.imax||30;
   S.outp=+d.outp||0; S.stat=+d.stat||0; S.err=+d.err||0;
   S.j18=+d.j18||0; S.fw=d.fw||'--'; S.ip=d.ip||'--'; S.mac=d.mac||'--';
-  pushBuf(); syncInputs(); render();
+  applyRanges(); pushBuf(); syncInputs(); render();
 }
 function pushBuf(){
   S.vBuf.push(S.vmeas); S.vBuf.shift();
@@ -324,6 +362,16 @@ function syncInputs(){
   if(document.activeElement!==$('iSet')){ $('iSet').value=S.iset.toFixed(2); $('iSlide').value=S.iset; }
   if(document.activeElement!==$('vProt')) $('vProt').value=S.vprot.toFixed(1);
   if(document.activeElement!==$('iProt')) $('iProt').value=S.iprot.toFixed(1);
+}
+/* 依据固件真实量程刷新滑块/输入框上限与量程文案 */
+function applyRanges(){
+  if($('vSet')){ $('vSet').max=S.vmax; $('vSlide').max=S.vmax; }
+  if($('iSet')){ $('iSet').max=S.imax; $('iSlide').max=S.imax; }
+  if($('vProt')) $('vProt').max=S.vmax;
+  if($('iProt')) $('iProt').max=S.imax;
+  if($('vRange')) $('vRange').textContent='量程 0~'+S.vmax+'V';
+  if($('iRange')) $('iRange').textContent='量程 0~'+S.imax+'mA';
+  if($('subTitle')) $('subTitle').textContent='Source-Measure Unit · 0~'+S.vmax+'V / 0~'+S.imax+'mA · CV / CC / VM / IM';
 }
 /* 发送设置（PRD §6.3 /set）；演示模式下本地生效 */
 function sendSet(params){
@@ -377,14 +425,15 @@ function simStep(){
 function bindNum(id,key,min,max,dec){
   var el=$(id);
   el.addEventListener('change',function(){
-    var v=clamp(el.value,min,max); el.value=v.toFixed(dec);
+    var mx = S[RANGE_MAX[key]] || max;
+    var v=clamp(el.value,min,mx); el.value=v.toFixed(dec);
     var p={}; p[key]=v; sendSet(p);
   });
 }
 function bindPair(numId,slideId,key,min,max,dec){
   var n=$(numId), s=$(slideId);
   s.addEventListener('input',function(){ n.value=(+s.value).toFixed(dec); });
-  s.addEventListener('change',function(){ var v=clamp(s.value,min,max); var p={}; p[key]=v; sendSet(p); });
+  s.addEventListener('change',function(){ var mx=S[RANGE_MAX[key]]||max; var v=clamp(s.value,min,mx); var p={}; p[key]=v; sendSet(p); });
   bindNum(numId,key,min,max,dec);
 }
 (function init(){
@@ -400,6 +449,13 @@ function bindPair(numId,slideId,key,min,max,dec){
   $('outpBtn').addEventListener('click',function(){ sendSet({outp:S.outp?0:1}); });
   $('rstBtn').addEventListener('click',function(){ sendCmd('*RST'); });
   $('clsBtn').addEventListener('click',function(){ sendCmd('*CLS'); });
+  /* 校准：走 /cmd 透传，与串口同一命令层（smu_cmd.c CAL:*） */
+  $('calVz').addEventListener('click',function(){ sendCmd('CAL:VOLT:ZERO'); });
+  $('calVgBtn').addEventListener('click',function(){ var v=clamp($('calVg').value,0,S.vmax); sendCmd('CAL:VOLT:GAIN '+v.toFixed(3)); });
+  $('calIz').addEventListener('click',function(){ sendCmd('CAL:CURR:ZERO'); });
+  $('calIgBtn').addEventListener('click',function(){ var i=clamp($('calIg').value,0,S.imax); sendCmd('CAL:CURR:GAIN '+i.toFixed(2)); });
+  $('calSave').addEventListener('click',function(){ sendCmd('CAL:SAVE'); });
+  $('calDef').addEventListener('click',function(){ sendCmd('CAL:DEF'); });
   window.addEventListener('resize',function(){ render(); });
   setConn(false); S.demo=true; simStep(); render();
   setInterval(poll,POLL_MS); poll();

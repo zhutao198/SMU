@@ -86,6 +86,7 @@ if ($words.Count -eq 0) {
 
 function F32([uint32]$v) { [BitConverter]::ToSingle([BitConverter]::GetBytes($v), 0) }
 function Hex2Ip([uint32]$v) { "{0}.{1}.{2}.{3}" -f ($v -band 0xFF), (($v -shr 8) -band 0xFF), (($v -shr 16) -band 0xFF), (($v -shr 24) -band 0xFF) }
+function I16([uint32]$v) { [BitConverter]::ToInt16(@([byte]($v -band 0xFF), [byte](($v -shr 8) -band 0xFF)), 0) }
 
 # ---- g_smu (smu_state_t) ----
 $g = [Convert]::ToUInt32($syms['g_smu'], 16)
@@ -97,8 +98,8 @@ $vprot = F32 (Gw 12); $iprot = F32 (Gw 16)
 $outp = Gw 20
 $vmeas = F32 (Gw 24); $imeas = F32 (Gw 28)
 $vraw = F32 (Gw 32);  $iraw = F32 (Gw 36)
-$adc0 = [int16]((Gw 40) -band 0xFFFF); $adc1 = [int16]((Gw 40) -shr 16)
-$adc2 = [int16]((Gw 44) -band 0xFFFF); $adc3 = [int16]((Gw 44) -shr 16)
+$adc0 = I16 (Gw 40); $adc1 = I16 ((Gw 40) -shr 16)
+$adc2 = I16 (Gw 44); $adc3 = I16 ((Gw 44) -shr 16)
 $stat = Gw 48 -band 0xFFFF
 $err  = [int16]((Gw 50) -band 0xFFFF)
 $j18  = Gw 52 -band 0xFF

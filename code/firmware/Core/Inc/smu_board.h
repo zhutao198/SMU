@@ -77,11 +77,11 @@ extern IWDG_HandleTypeDef hiwdg;      /* IWDG     : 100ms 看门狗        */
 
 /* ==================== 量程与换算系数（PRD §5 / §7） ======================= */
 #define SMU_V_MAX               15.0f    /* 电压设定上限 V（母线16V→实际≤~15V） */
-#define SMU_I_MAX_MA            30.0f    /* 电流设定上限 mA         */
+#define SMU_I_MAX_MA            120.0f   /* 电流设定上限 mA。注意：受电流检测链路限制——\n                                        * 现有拟合 RSENSE=0.570/INA_GAIN=30 → 有效 G×RSENSE=17.1，\n                                        * ADS1115 PGA ±2.048V 满量程对应 I=2.048/17.1≈120mA。\n                                        * 超过此值 ADC 削顶、OCP 永不触发，故上限锁在可测上限。\n                                        * 换更低 RSENSE/INA 增益硬件并改对应常量+标定后可再调高。 */
 #define SMU_V_PROT_MIN          1.0f     /* 过压保护下限 V          */
-#define SMU_V_PROT_DEF          13.0f    /* 过压保护默认 V（量程0-12V）*/
+#define SMU_V_PROT_DEF          15.0f    /* 过压保护默认 V（与 SMU_V_MAX=15 一致，避免满程输出被误锁）*/
 #define SMU_I_PROT_MIN          1.0f     /* 过流保护下限 mA         */
-#define SMU_I_PROT_DEF          30.0f    /* 过流保护默认 mA         */
+#define SMU_I_PROT_DEF          120.0f   /* 过流保护默认 mA（=可测上限，避免 OCP 设在削顶点之外永不触发）*/
 #define SMU_VDIV_RATIO          9.66f    /* R137 86.6k / R157 10k   */
 #define SMU_INA_GAIN            30.0f    /* 本板用 INA128（非 INA129），标称 G=1+50k/RG；RG=1k→G=51。
                                         * 但实测有效 G×RSENSE≈17（INA128 引脚(OUT-REF)=0.299V@17.58mA 反推），
