@@ -122,7 +122,7 @@ extern IWDG_HandleTypeDef hiwdg;      /* IWDG     : 100ms 看门狗        */
  *      (0..DUTY_MAX)，否则大负载到不了设定电流；KP/KI 取保守值防低阻负载震荡；
  *      死区 0.1mA 防极限环。电流反馈延迟已靠 CC 模式电流优先采样压到 ~32ms。 */
 #define SMU_CTRL_KP_CV          0.002f
-#define SMU_CTRL_KI_CV          0.0006f   /* 原 0.0002：软启动 anti-windup 后残余微调更快；5ms 延迟下穿越~0.4Hz 仍极稳 */
+#define SMU_CTRL_KI_CV          0.0018f   /* A优化：由0.0006提3×，加快CV残差/负载阶跃收敛；5ms延迟下穿越仍远低于稳定边界，死区5mV+INT_MAX=0.05限幅防windup/极限环 */
 #define SMU_CTRL_INT_MAX_CV     0.05f
 #define SMU_CTRL_KP_CC          0.001f   /* 减半：INA_GAIN 25 使环路增益较原 50.4 翻倍，PI 同步减半以恢复稳定 */
 #define SMU_CTRL_KI_CC          0.00025f

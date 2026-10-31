@@ -259,6 +259,13 @@ function toast(msg,kind){
 }
 
 /* ---------------- 图表 ---------------- */
+function niceStep(raw){
+  if(!(raw>0)) return 1;
+  var e=Math.pow(10,Math.floor(Math.log10(raw)));
+  var f=raw/e, nf;
+  if(f<1.5) nf=1; else if(f<3) nf=2; else if(f<7) nf=5; else nf=10;
+  return nf*e;
+}
 function drawChart(cv,buf,color,unit){
   var dpr = window.devicePixelRatio||1;
   var w=cv.clientWidth, h=cv.clientHeight;
@@ -269,12 +276,32 @@ function drawChart(cv,buf,color,unit){
   for(i=0;i<buf.length;i++) if(buf[i]!=null){ n++; if(lo===null||buf[i]<lo)lo=buf[i]; if(hi===null||buf[i]>hi)hi=buf[i]; }
   if(!n) return;
   if(hi-lo<1e-9){ hi+=0.5; lo-=0.5; }
-  var pad=(hi-lo)*0.12; hi+=pad; lo-=pad;
-  var X=function(i){ return 4+(w-8)*i/(N_PTS-1); };
-  var Y=function(v){ return 6+(h-12)*(1-(v-lo)/(hi-lo)); };
+  /* 自适应量程：上下留 12% 余量，再用 nice step 吸附成整数刻度，Y 轴刻度随波形自动调整 */
+  var pad=(hi-lo)*0.12, dlo=lo-pad, dhi=hi+pad, step=niceStep((dhi-dlo)/4);
+  var lo2=Math.floor(dlo/step)*step, hi2=Math.ceil(dhi/step)*step;
+  if(hi2-lo2 < step) hi2=lo2+step;
+  while((hi2-lo2)/step > 8){ step*=2; hi2=Math.ceil(dhi/step)*step; lo2=Math.floor(dlo/step)*step; }
+  var ticks=[]; for(var val=lo2; val<=hi2+1e-9; val+=step) ticks.push(val);
+  var padL=44, padR=8, padT=8, padB=8, pw=w-padL-padR, ph=h-padT-padB;
+  var X=function(i){ return padL + pw*i/(N_PTS-1); };
+  var Y=function(v){ return padT + ph*(1-(v-lo2)/(hi2-lo2)); };
+  /* 水平网格（对齐刻度） */
   c.strokeStyle='rgba(139,152,165,.16)'; c.lineWidth=1; c.beginPath();
-  for(i=1;i<4;i++){ var y=6+(h-12)*i/4; c.moveTo(0,y); c.lineTo(w,y); }
+  for(i=0;i<ticks.length;i++){ var gy=Y(ticks[i]); c.moveTo(padL,gy); c.lineTo(w-padR,gy); }
   c.stroke();
+  /* Y 轴线 */
+  c.strokeStyle='rgba(139,152,165,.5)'; c.beginPath(); c.moveTo(padL,padT); c.lineTo(padL,padT+ph); c.stroke();
+  /* 轴上刻度线 + 数值（跟随自适应量程，最高位标注单位） */
+  var dp = step>=10?0 : step>=1?1 : step>=0.1?2 : 3;
+  c.fillStyle='rgba(199,210,222,.85)'; c.font='9px '+getComputedStyle(document.body).fontFamily;
+  c.textBaseline='middle'; c.textAlign='right';
+  for(i=0;i<ticks.length;i++){
+    var y=Y(ticks[i]);
+    c.strokeStyle='rgba(139,152,165,.5)'; c.beginPath(); c.moveTo(padL-4,y); c.lineTo(padL,y); c.stroke();
+    c.fillText(ticks[i].toFixed(dp)+(i===ticks.length-1?(' '+unit):''), padL-6, y);
+  }
+  c.textAlign='left';
+  /* 波形 */
   c.strokeStyle=color; c.lineWidth=1.6; c.beginPath();
   var started=false;
   for(i=0;i<N_PTS;i++){
@@ -283,9 +310,6 @@ function drawChart(cv,buf,color,unit){
     if(!started){ c.moveTo(px,py); started=true; } else c.lineTo(px,py);
   }
   c.stroke();
-  c.fillStyle=color; c.font='10px '+getComputedStyle(document.body).fontFamily;
-  c.fillText(hi.toFixed(2)+' '+unit,6,11);
-  c.fillText(lo.toFixed(2),6,h-4);
 }
 
 /* ---------------- 渲染 ---------------- */
